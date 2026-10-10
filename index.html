@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b5ed7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Water Controller</title>
+<style>
+:root{--bg:#f2f5f9;--card:#fff;--tx:#12202e;--mut:#6b7a8a;--pri:#0b5ed7;--ok:#1a9b4b;--bad:#d62839;--warn:#e08a00;--line:#dde4ec}
+@media(prefers-color-scheme:dark){:root{--bg:#0d141b;--card:#16212c;--tx:#e8eef5;--mut:#8da0b3;--line:#263544}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 system-ui,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;align-items:center;gap:8px;padding:12px 14px;background:var(--pri);color:#fff;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0;flex:1}
+.pill{font-size:11px;padding:3px 8px;border-radius:99px;background:rgba(255,255,255,.2)}
+.pill.on{background:#1a9b4b}.pill.off{background:#d62839}
+header button{background:none;border:0;color:#fff;font-size:20px}
+main{padding:12px;max-width:560px;margin:auto;display:grid;gap:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+h3{margin:0 0 8px;font-size:15px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.lv{height:110px;display:flex;flex-direction:column-reverse;gap:4px}
+.lv i{flex:1;border-radius:6px;background:var(--line)}
+.lv i.on{background:var(--pri)}.lv.low i.on{background:var(--bad)}
+.pct{text-align:center;font-size:22px;font-weight:700;margin-top:6px}
+.badge{font-size:12px;font-weight:700;padding:3px 9px;border-radius:99px;background:var(--line)}
+.badge.run{background:var(--ok);color:#fff}.badge.bad{background:var(--bad);color:#fff}.badge.warn{background:var(--warn);color:#fff}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:10px 0}
+button.b{padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--tx);font-size:14px}
+button.b.act{background:var(--pri);color:#fff;border-color:var(--pri)}
+button.sm{padding:8px 10px;font-size:13px}
+details{margin-top:8px}summary{cursor:pointer;color:var(--pri);font-weight:600}
+.slot{display:flex;align-items:center;gap:6px;margin:8px 0}
+.slot input[type=time]{flex:1;padding:6px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx)}
+.mut{color:var(--mut);font-size:12px}
+#log{max-height:160px;overflow:auto;font-size:13px}
+#log div{padding:5px 0;border-bottom:1px solid var(--line)}
+#toast{position:fixed;left:12px;right:12px;bottom:calc(14px + env(safe-area-inset-bottom));background:#222;color:#fff;padding:12px;border-radius:12px;display:none;z-index:9}
+dialog{border:0;border-radius:14px;padding:16px;width:min(92vw,420px);background:var(--card);color:var(--tx)}
+dialog input{width:100%;padding:10px;margin:4px 0 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Water Controller</h1>
+  <span class="pill" id="cloud">cloud</span>
+  <span class="pill" id="dev">device</span>
+  <button id="gear" aria-label="Settings">&#9881;</button>
+</header>
+<main>
+  <div class="grid2">
+    <div class="card"><h3>Source tank</h3><div class="lv" id="src"><i></i><i></i><i></i><i></i></div><div class="pct" id="srcp">--</div></div>
+    <div class="card"><h3>Roof tank</h3><div class="lv" id="tnk"><i></i><i></i><i></i><i></i></div><div class="pct" id="tnkp">--</div></div>
+  </div>
+  <div id="motors"></div>
+  <div class="card"><div class="row"><h3>Alerts</h3><span class="mut" id="clock"></span></div><div id="log"><span class="mut">No alerts yet.</span></div></div>
+</main>
+<div id="toast"></div>
+
+<dialog id="dlg">
+  <h3>Cloud connection</h3>
+  <label class="mut">HiveMQ host</label><input id="host" placeholder="abc123.s1.eu.hivemq.cloud" autocapitalize="off" autocomplete="off">
+  <label class="mut">Username</label><input id="user" autocapitalize="off" autocomplete="off">
+  <label class="mut">Password</label><input id="pass" type="password" autocomplete="off">
+  <div class="row"><button class="b" id="cancel">Cancel</button><button class="b act" id="save">Save &amp; connect</button></div>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>
+const PREFIX = 'wlc/home1/';              // must match the ESP32 sketch
+const MOTORS = [['bore', 'Borehole motor'], ['boost', 'Donkey pump (borehole line)'], ['roof', 'Roof pump']];
+const $ = s => document.querySelector(s);
+let client = null, loaded = {};
+
+$('#motors').innerHTML = MOTORS.map(([k, title]) => `
+<div class="card" style="margin-bottom:12px">
+  <div class="row"><h3>${title}</h3><span class="badge" id="${k}-st">--</span></div>
+  <div>Current: <b id="${k}-a">--</b> A <span class="mut">(dry-run limit <span id="${k}-d">--</span> A)</span></div>
+  <div class="seg" id="${k}-mode">
+    <button class="b" data-m="AUTO">Auto</button><button class="b" data-m="ON">On</button><button class="b" data-m="OFF">Off</button>
+  </div>
+  <div class="mut">Auto = sensors decide. On/Off = manual. Safety stops always apply.</div>
+  ${k === 'boost' ? '<div class="mut">Starts 3 s after the borehole motor and stops with it. Off = bypass (bore runs alone).</div>' : `<details><summary>Timings (run window)</summary>
+    ${[0, 1, 2].map(i => `<div class="slot"><input type="checkbox" id="${k}-en${i}"><input type="time" id="${k}-s${i}"><span>to</span><input type="time" id="${k}-e${i}"></div>`).join('')}
+    <button class="b act sm" data-save="${k}">Save timings</button>
+  </details>`}
+  <div class="row" style="margin-top:10px">
+    <button class="b sm" data-cal="${k}">Calibrate dry-run</button>
+    <button class="b sm" data-reset="${k}">Reset fault</button>
+  </div>
+</div>`).join('');
+
+const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const mins = v => { if (!v) return 0; const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', 3500); }
+function setCloud(ok) { const p = $('#cloud'); p.textContent = ok ? 'cloud on' : 'cloud off'; p.className = 'pill ' + (ok ? 'on' : 'off'); }
+function setDev(ok) { const p = $('#dev'); p.textContent = ok ? 'controller online' : 'controller offline'; p.className = 'pill ' + (ok ? 'on' : 'off'); }
+function setLevel(id, lvl, pct) {
+  const el = $('#' + id);
+  el.querySelectorAll('i').forEach((x, i) => x.classList.toggle('on', i < lvl));
+  el.classList.toggle('low', lvl <= 1);
+  $('#' + id + 'p').textContent = pct + '%';
+}
+function addAlert(t, quiet) {
+  const log = $('#log'); if (log.querySelector('.mut')) log.innerHTML = '';
+  const d = document.createElement('div'); d.textContent = t; log.prepend(d);
+  if (quiet) return;
+  toast(t);
+  if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+}
+
+function onState(d) {
+  setLevel('src', d.srcL, d.src); setLevel('tnk', d.tnkL, d.tnk);
+  $('#clock').textContent = d.time ? 'Device time ' + d.time : '';
+  for (const [k] of MOTORS) {
+    const m = d[k]; if (!m) continue;
+    const b = $('#' + k + '-st'); b.textContent = m.st;
+    b.className = 'badge ' + (m.on ? 'run' : /FAULT|DRY/.test(m.st) ? 'bad' : /SOURCE|TANK|WAIT/.test(m.st) ? 'warn' : '');
+    $('#' + k + '-a').textContent = m.amps.toFixed(1);
+    $('#' + k + '-d').textContent = m.dry.toFixed(1);
+    document.querySelectorAll('#' + k + '-mode button').forEach(x => x.classList.toggle('act', x.dataset.m === m.mode));
+    if (!loaded[k] && m.sch) {
+      m.sch.forEach((s, i) => { $(`#${k}-en${i}`).checked = !!s.en; $(`#${k}-s${i}`).value = hhmm(s.s); $(`#${k}-e${i}`).value = hhmm(s.e); });
+      loaded[k] = 1;
+    }
+  }
+}
+
+function send(o) {
+  if (!client || !client.connected) return toast('Not connected to the cloud');
+  client.publish(PREFIX + 'cmd', JSON.stringify(o));
+}
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.m) send({ motor: t.parentElement.id.replace('-mode', ''), mode: t.dataset.m });
+  if (t.dataset.save) {
+    const k = t.dataset.save;
+    send({ motor: k, sch: [0, 1, 2].map(i => ({ s: mins($(`#${k}-s${i}`).value), e: mins($(`#${k}-e${i}`).value), en: $(`#${k}-en${i}`).checked ? 1 : 0 })) });
+    toast('Timings saved');
+  }
+  if (t.dataset.cal) { if (confirm('Motor must be RUNNING with water flowing. Calibrate now?')) send({ motor: t.dataset.cal, calibrate: true }); }
+  if (t.dataset.reset) send({ motor: t.dataset.reset, reset: true });
+});
+$('#gear').onclick = () => { const c = JSON.parse(localStorage.wlc || '{}'); $('#host').value = c.host || ''; $('#user').value = c.user || ''; $('#pass').value = c.pass || ''; $('#dlg').showModal(); };
+$('#cancel').onclick = () => $('#dlg').close();
+$('#save').onclick = () => { localStorage.wlc = JSON.stringify({ host: $('#host').value.trim(), user: $('#user').value.trim(), pass: $('#pass').value }); $('#dlg').close(); connect(); };
+
+function connect() {
+  const c = JSON.parse(localStorage.wlc || '{}');
+  if (!c.host) { $('#gear').click(); return; }
+  if (client) client.end(true);
+  client = mqtt.connect(`wss://${c.host}:8884/mqtt`, {
+    username: c.user, password: c.pass, reconnectPeriod: 3000, connectTimeout: 8000,
+    clientId: 'app-' + Math.random().toString(16).slice(2, 10)
+  });
+  client.on('connect', () => { setCloud(true); client.subscribe([PREFIX + 'state', PREFIX + 'status', PREFIX + 'alert']); });
+  client.on('close', () => { setCloud(false); setDev(false); });
+  client.on('error', () => toast('Cloud login failed - check host, username, password'));
+  client.on('message', (topic, buf) => {
+    const s = buf.toString();
+    if (topic.endsWith('/state')) { try { onState(JSON.parse(s)); } catch (e) {} }
+    else if (topic.endsWith('/status')) setDev(s === 'online');
+    else if (topic.endsWith('/alert')) addAlert(new Date().toTimeString().slice(0, 5) + '  ' + s, false);
+  });
+}
+setCloud(false); setDev(false); connect();
+</script>
+</body>
+</html>
