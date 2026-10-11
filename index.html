@@ -50,6 +50,7 @@ dialog input{width:100%;padding:10px;margin:4px 0 10px;border-radius:8px;border:
   <button id="gear" aria-label="Settings">&#9881;</button>
 </header>
 <main>
+  <div class="card" id="cstat" style="font-size:13px">Starting...</div>
   <div class="grid2">
     <div class="card"><h3>Source tank</h3><div class="lv" id="src"><i></i><i></i><i></i><i></i></div><div class="pct" id="srcp">--</div></div>
     <div class="card"><h3>Roof tank</h3><div class="lv" id="tnk"><i></i><i></i><i></i><i></i></div><div class="pct" id="tnkp">--</div></div>
@@ -72,7 +73,7 @@ dialog input{width:100%;padding:10px;margin:4px 0 10px;border-radius:8px;border:
 const PREFIX = 'wlc/home1/';              // must match the ESP32 sketch
 const MOTORS = [['bore', 'Borehole motor'], ['boost', 'Donkey pump (borehole line)'], ['roof', 'Roof pump']];
 const $ = s => document.querySelector(s);
-let client = null, loaded = {};
+let client = null, loaded = {}, lastErr = '';
 
 $('#motors').innerHTML = MOTORS.map(([k, title]) => `
 <div class="card" style="margin-bottom:12px">
@@ -95,6 +96,7 @@ $('#motors').innerHTML = MOTORS.map(([k, title]) => `
 const hhmm = m => String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
 const mins = v => { if (!v) return 0; const [h, m] = v.split(':').map(Number); return h * 60 + m; };
 function toast(t) { const e = $('#toast'); e.textContent = t; e.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => e.style.display = 'none', 3500); }
+function stat(t) { $('#cstat').textContent = t; }
 function setCloud(ok) { const p = $('#cloud'); p.textContent = ok ? 'cloud on' : 'cloud off'; p.className = 'pill ' + (ok ? 'on' : 'off'); }
 function setDev(ok) { const p = $('#dev'); p.textContent = ok ? 'controller online' : 'controller offline'; p.className = 'pill ' + (ok ? 'on' : 'off'); }
 function setLevel(id, lvl, pct) {
@@ -152,13 +154,15 @@ function connect() {
   const c = JSON.parse(localStorage.wlc || '{}');
   if (!c.host) { $('#gear').click(); return; }
   if (client) client.end(true);
-  client = mqtt.connect(`wss://${c.host.includes(':') ? c.host : c.host + ':8084'}/mqtt`, {
+  const hp = c.host.includes(':') ? c.host : c.host + ':8084';
+  stat('Connecting to ' + hp + ' as "' + c.user + '" (password length ' + (c.pass || '').length + ')...');
+  client = mqtt.connect(`wss://${hp}/mqtt`, {
     username: c.user, password: c.pass, reconnectPeriod: 3000, connectTimeout: 8000,
     clientId: 'app-' + Math.random().toString(16).slice(2, 10)
   });
-  client.on('connect', () => { setCloud(true); client.subscribe([PREFIX + 'state', PREFIX + 'status', PREFIX + 'alert']); });
-  client.on('close', () => { setCloud(false); setDev(false); });
-  client.on('error', () => toast('Cloud login failed - check host, username, password'));
+  client.on('connect', () => { lastErr = ''; stat('Connected to ' + hp); setCloud(true); client.subscribe([PREFIX + 'state', PREFIX + 'status', PREFIX + 'alert']); });
+  client.on('close', () => { stat('Not connected - retrying (host ' + hp + ')' + (lastErr ? ' | last error: ' + lastErr : '')); setCloud(false); setDev(false); });
+  client.on('error', (e) => { const m = (e && e.message) ? e.message : String(e); lastErr = m; stat('Error: ' + m); toast('Cloud problem: ' + m); });
   client.on('message', (topic, buf) => {
     const s = buf.toString();
     if (topic.endsWith('/state')) { try { onState(JSON.parse(s)); } catch (e) {} }
