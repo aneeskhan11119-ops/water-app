@@ -61,7 +61,7 @@ dialog input{width:100%;padding:10px;margin:4px 0 10px;border-radius:8px;border:
 
 <dialog id="dlg">
   <h3>Cloud connection</h3>
-  <label class="mut">HiveMQ host</label><input id="host" placeholder="abc123.s1.eu.hivemq.cloud" autocapitalize="off" autocomplete="off">
+  <label class="mut">EMQX host (from your broker page, without wss:// or port)</label><input id="host" placeholder="abc123.ala.asia-southeast1.emqxsl.com" autocapitalize="off" autocomplete="off">
   <label class="mut">Username</label><input id="user" autocapitalize="off" autocomplete="off">
   <label class="mut">Password</label><input id="pass" type="password" autocomplete="off">
   <div class="row"><button class="b" id="cancel">Cancel</button><button class="b act" id="save">Save &amp; connect</button></div>
@@ -152,7 +152,7 @@ function connect() {
   const c = JSON.parse(localStorage.wlc || '{}');
   if (!c.host) { $('#gear').click(); return; }
   if (client) client.end(true);
-  client = mqtt.connect(`wss://${c.host}:8884/mqtt`, {
+  client = mqtt.connect(`wss://${c.host.includes(':') ? c.host : c.host + ':8084'}/mqtt`, {
     username: c.user, password: c.pass, reconnectPeriod: 3000, connectTimeout: 8000,
     clientId: 'app-' + Math.random().toString(16).slice(2, 10)
   });
